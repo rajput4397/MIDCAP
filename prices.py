@@ -24,6 +24,7 @@ def fetch_prices(TICKER, start, end, interval):
     for col in required_cols:
         if col not in df.columns:
             raise SystemExit(f"Missing column in data: {col}")
+    # df.to_csv('ans2.csv')
 
     return df
 
@@ -128,29 +129,40 @@ def compute_supertrend(data, period=10, multiplier=3):
     return df_local
 
 
-def supertrend_momentum_filter(df_st, df_orig):
-    """
-    Conditions:
-    1. SuperTrend green for >= 10 days
-    2. Price change over last 5 days > +7%
-    3. Volume condition:
-        - If ST green < 20 days:
-            avg vol (last 5 days) >
-            1.6 * avg vol (20 days BEFORE ST turned green)
-        - If ST green >= 20 days:
-            ignore volume condition
+def supertrend_momentum_filter(st_df, df_orig):
 
-    Returns:
-        True / False
-    """
-
-    # --- Safety checks ---
-    if len(df_st) < 30 or len(df_orig) < 30:
+    if len(st_df) < 10:
         return False
 
-    # --- 1️⃣ Count consecutive green SuperTrend days ---
-    st_dir = df_st["ST_dir"]
+    last_10 = st_df.tail(10)
+    last_5 = last_10.tail(5)
 
+    # 1️⃣ SuperTrend must be green for last 10 days
+    if not (last_10["ST_dir"] == 1).all():
+        print("break at 1")
+        return False
+
+    # 2️⃣ if any strong red candles in last 5
+    if (last_5["Open"] > last_5["Close"]).any():
+        print("break at 2")
+        return False
+
+    # 3️⃣ Too many red candles in last 10
+    if (last_10["Close"] < last_10["Open"]).sum() > 2:
+        print("break at 3")
+        return False
+
+    # 4️⃣ Momentum: ≥ 7% rise in last 5 closes
+    x = df_orig.tail(5)
+    first_close = x.iloc[0]["Close"]
+    last_close = x.iloc[-1]["Close"]
+
+    if (last_close - first_close) / first_close < 0.07:
+        print("break at 4")
+        return False
+
+    # 5️⃣ Volume confirmation ONLY if ST recently flipped
+    st_dir = st_df["ST_dir"].values
     green_days = 0
     for val in reversed(st_dir):
         if val == 1:
@@ -158,35 +170,25 @@ def supertrend_momentum_filter(df_st, df_orig):
         else:
             break
 
-    if green_days < 10:
-        return False
-
-    # --- 2️⃣ Price change over last 5 trading days ---
-    close_now = df_orig["Close"].iloc[-1]
-    close_5d_ago = df_orig["Close"].iloc[-6]
-
-    price_change_pct = ((close_now - close_5d_ago) / close_5d_ago) * 100
-
-    if price_change_pct <= 7:
-        return False
-
-    # --- 3️⃣ Volume condition ---
-    if green_days < 20:
-        # Find index where ST turned green
+    if green_days < len(st_dir):
         st_turn_idx = len(st_dir) - green_days
 
-        # Need at least 20 days BEFORE ST turned green
-        if st_turn_idx < 20:
+        avg_vol_last_5 = df_orig["Volume"].iloc[-5:].mean()
+        pre_vol_slice = df_orig["Volume"].iloc[max(0, st_turn_idx - 20): st_turn_idx]
+
+        if len(pre_vol_slice) == 0:
             return False
 
-        avg_vol_last_5 = df_orig["Volume"].iloc[-5:].mean()
-        avg_vol_pre_20 = df_orig["Volume"].iloc[st_turn_idx - 20 : st_turn_idx].mean()
+        avg_vol_pre_20 = pre_vol_slice.mean()
 
         if avg_vol_last_5 <= 1.6 * avg_vol_pre_20:
             return False
 
-    # --- All conditions satisfied ---
     return True
+
+
+
+
 
 
 
@@ -215,8 +217,8 @@ def send_telegram_alert(bot_token, chat_id, message):
 
 
 def calculate(TICKER,BOT_TOKEN,CHAT_ID):
-    # today = date.today()
-    today = date(2025, 12, 9)
+    today = date.today()
+    # today = date(2026, 1, 7)
     two_months_ago = today - relativedelta(months=6)
     tomorrow = str(today + timedelta(days=1))
 
